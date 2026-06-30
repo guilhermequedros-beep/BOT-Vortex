@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 import asyncio
+import os  # Importado para ler a variável de ambiente do Render
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO INICIAL DO BOT
@@ -81,7 +82,7 @@ class BotaoFila(Button):
                 jogadores_partida = filas_data[chave][self.tipo_gel][:limite]
                 filas_data[chave][self.tipo_gel] = filas_data[chave][self.tipo_gel][limite:]
                 
-                # Inicia a rotina da sala privada de confirmação
+                # Inicia a rotina da sala privada de confirmation
                 asyncio.create_task(criar_sala_confirmacao(interaction.guild, jogadores_partida, self.formato_canal, self.valor_aposta, self.tipo_gel))
 
         # Atualiza a Embed visual do painel correspondente
@@ -248,4 +249,5 @@ async def gerarpaineis(ctx):
 async def on_ready():
     print(f"[{bot.user.name}] Monitoramento Mobile, Emulador e Misto Ativado!")
 
-bot.run
+# Puxa o Token com segurança das variáveis do Render
+bot.run(os.environ.get("DISCORD_TOKEN"))
