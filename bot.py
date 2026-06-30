@@ -2,23 +2,21 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 import asyncio
-import os  # Importado para ler a variável de ambiente do Render
+import os
 
 # ==============================================================================
 # 1. CONFIGURAÇÃO INICIAL DO BOT
 # ==============================================================================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guilds = True  # Obrigatório para criação e remoção de salas temporárias
+intents.guilds = True  
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Lista completa com os 10 valores de apostas do seu servidor
 VALORES_APOSTAS = ["1,00", "2,00", "3,00", "5,00", "10,00", "20,00", "30,00", "40,00", "50,00", "100,00"]
 
-# Memória dinâmica para as filas (Evita que canais diferentes misturem jogadores)
+# Memória dinâmica para as filas
 filas_data = {}
 
-# Se quiser agrupar os chats provisórios em uma categoria, coloque o ID dela aqui
 ID_CATEGORIA_TEMPORARIA = 0 
 
 def inicializar_filas_para_formato(formato):
@@ -28,13 +26,20 @@ def inicializar_filas_para_formato(formato):
         if chave not in filas_data:
             filas_data[chave] = {"Gel Infinito": [], "Gel Normal": []}
 
+def obter_limite_jogadores(formato_canal):
+    """Define dinamicamente o tamanho da sala com base no formato (ex: 2x2 = 4 jogadores)"""
+    if "1x1" in formato_canal: return 2
+    elif "2x2" in formato_canal: return 4
+    elif "3x3" in formato_canal: return 6
+    elif "4x4" in formato_canal: return 8
+    return 2
+
 # ==============================================================================
 # 2 e 3. BOTÕES INTERATIVOS E GERENCIAMENTO DE ENTRADA/SAÍDA
 # ==============================================================================
 
 class BotaoFila(Button):
     def __init__(self, label, style, custom_id, valor_aposta, tipo_gel, formato_canal):
-        # Remove espaços do custom_id para evitar o erro "Interação Falhou" do Discord
         safe_custom_id = custom_id.replace(" ", "_")
         super().__init__(label=label, style=style, custom_id=safe_custom_id)
         self.valor_aposta = valor_aposta
@@ -44,7 +49,9 @@ class BotaoFila(Button):
     async def callback(self, interaction: discord.Interaction):
         user_id = interaction.user.id
         chave = f"{self.formato_canal}_{self.valor_aposta}"
-        limite = 2  # Sua regra padrão: 2 pessoas por confronto direto
+        
+        # CORREÇÃO 1: Limite dinâmico baseado no formato do canal (1x1, 2x2, etc)
+        limite = obter_limite_jogadores(self.formato_canal)
         
         if chave not in filas_data:
             filas_data[chave] = {"Gel Infinito": [], "Gel Normal": []}
@@ -62,37 +69,41 @@ class BotaoFila(Button):
             if removido:
                 await interaction.response.send_message("Você saiu da fila!", ephemeral=True)
             else:
-                await interaction.response.send_message("Você não está em nenhuma fila deste painel.", ephemeral=True)
+                return await interaction.response.send_message("Você não está em nenhuma fila deste painel.", ephemeral=True)
         
         # Ação: Entrar na Fila
         else:
-            # Remove se o jogador já estiver no outro gel do mesmo painel
+            # Evita que o jogador entre na fila se ele já estiver nela
+            if user_id in filas_data[chave][self.tipo_gel]:
+                return await interaction.response.send_message(f"Você já está na fila {self.tipo_gel}.", ephemeral=True)
+
+            # Remove se o jogador já estiver no outro tipo de gel do mesmo painel
             outro_tipo = "Gel Normal" if self.tipo_gel == "Gel Infinito" else "Gel Infinito"
             if user_id in filas_data[chave][outro_tipo]:
                 filas_data[chave][outro_tipo].remove(user_id)
             
-            if user_id not in filas_data[chave][self.tipo_gel]:
-                filas_data[chave][self.tipo_gel].append(user_id)
-                await interaction.response.send_message(f"Você entrou na fila {self.tipo_gel}!", ephemeral=True)
-            else:
-                await interaction.response.send_message(f"Você já está na fila {self.tipo_gel}.", ephemeral=True)
+            filas_data[chave][self.tipo_gel].append(user_id)
+            await interaction.response.send_message(f"Você entrou na fila {self.tipo_gel}!", ephemeral=True)
             
-            # 4. GATILHO DE FILA CHEIA (Atingiu 2 competidores)
+            # 4. GATILHO DE FILA CHEIA
             if len(filas_data[chave][self.tipo_gel]) >= limite:
                 jogadores_partida = filas_data[chave][self.tipo_gel][:limite]
                 filas_data[chave][self.tipo_gel] = filas_data[chave][self.tipo_gel][limite:]
                 
-                # Inicia a rotina da sala privada de confirmation
+                # Dispara a sala de confirmação em segundo plano
                 asyncio.create_task(criar_sala_confirmacao(interaction.guild, jogadores_partida, self.formato_canal, self.valor_aposta, self.tipo_gel))
 
-        # Atualiza a Embed visual do painel correspondente
-        embed_atualizada = criar_embed_fila(self.valor_aposta, self.formato_canal)
-        await interaction.message.edit(embed=embed_atualizada)
+        # CORREÇÃO 2: Atualização segura da Embed original
+        try:
+            embed_atualizada = criar_embed_fila(self.valor_aposta, self.formato_canal)
+            await interaction.message.edit(embed=embed_atualizada)
+        except Exception:
+            pass
 
 
 class FilaView(View):
     def __init__(self, valor_aposta, formato_canal):
-        super().__init__(timeout=None) # Botões permanentes (não param de funcionar)
+        super().__init__(timeout=None)
         self.add_item(BotaoFila(label="🧬 Gel Infinito", style=discord.ButtonStyle.secondary, custom_id=f"inf_{formato_canal}_{valor_aposta}", valor_aposta=valor_aposta, tipo_gel="Gel Infinito", formato_canal=formato_canal))
         self.add_item(BotaoFila(label="🧬 Gel Normal", style=discord.ButtonStyle.secondary, custom_id=f"norm_{formato_canal}_{valor_aposta}", valor_aposta=valor_aposta, tipo_gel="Gel Normal", formato_canal=formato_canal))
         self.add_item(BotaoFila(label="❌ Sair da Fila", style=discord.ButtonStyle.danger, custom_id=f"sair_{formato_canal}_{valor_aposta}", valor_aposta=valor_aposta, tipo_gel="Sair", formato_canal=formato_canal))
@@ -124,6 +135,7 @@ def criar_embed_fila(valor, formato):
 
 async def criar_sala_confirmacao(guild, lista_jogadores, formato, valor, tipo_gel):
     categoria = guild.get_channel(ID_CATEGORIA_TEMPORARIA) if ID_CATEGORIA_TEMPORARIA else None
+    limite_jogadores = len(lista_jogadores)
     
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -144,7 +156,7 @@ async def criar_sala_confirmacao(guild, lista_jogadores, formato, valor, tipo_ge
     embed.add_field(name="👥 Jogadores", value="\n".join([f"<@{j_id}>" for j_id in lista_jogadores]), inline=False)
 
     confirmados = []
-    view_confirmar = View(timeout=90) # 1 minuto e meio para responder
+    view_confirmar = View(timeout=90)
 
     async def botao_confirmar_callback(interaction: discord.Interaction):
         if interaction.user.id not in lista_jogadores: return
@@ -152,13 +164,14 @@ async def criar_sala_confirmacao(guild, lista_jogadores, formato, valor, tipo_ge
         
         confirmados.append(interaction.user.id)
         await interaction.response.send_message("✅ Confirmado com sucesso!", ephemeral=True)
-        await canal_confirmacao.send(f"✅ **{interaction.user.mention}** confirmou a aposta! ({len(confirmados)}/2)")
+        await canal_confirmacao.send(f"✅ **{interaction.user.mention}** confirmou a aposta! ({len(confirmados)}/{limite_jogadores})")
 
-        if len(confirmados) == len(lista_jogadores):
+        if len(confirmados) == limite_jogadores:
             view_confirmar.stop()
             await canal_confirmacao.send("🚀 Todos confirmaram! Gerando sala de pagamento...")
             await asyncio.sleep(3)
-            await canal_confirmacao.delete()
+            try: await canal_confirmacao.delete()
+            except: pass
             await criar_sala_jogo(guild, lista_jogadores, formato, valor, tipo_gel)
 
     async def botao_cancelar_callback(interaction: discord.Interaction):
@@ -166,7 +179,8 @@ async def criar_sala_confirmacao(guild, lista_jogadores, formato, valor, tipo_ge
         view_confirmar.stop()
         await canal_confirmacao.send(f"❌ A partida foi cancelada por {interaction.user.mention}. Deletando canal em 5 segundos.")
         await asyncio.sleep(5)
-        await canal_confirmacao.delete()
+        try: await canal_confirmacao.delete()
+        except: pass
 
     btn_confirmar = Button(label="Confirmar", style=discord.ButtonStyle.success)
     btn_confirmar.callback = botao_confirmar_callback
@@ -204,7 +218,6 @@ async def criar_sala_jogo(guild, lista_jogadores, formato, valor, tipo_gel):
     mencoes = " ".join([f"<@{j_id}>" for j_id in lista_jogadores])
     await canal_jogo.send(content=mencoes, embed=embed)
 
-    # Contagem regressiva invisível de 30 minutos (1800 segundos)
     await asyncio.sleep(1800)
     try: await canal_jogo.delete()
     except: pass
@@ -216,29 +229,25 @@ async def criar_sala_jogo(guild, lista_jogadores, formato, valor, tipo_gel):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def gerarpaineis(ctx):
-    """Detecta automaticamente o formato e a categoria (Mobile, Emulador ou Misto) pelo nome do canal"""
     await ctx.message.delete()
     nome_canal = ctx.channel.name.lower()
     
-    # 1. Define o tamanho/vaga do formato
     if "1x1" in nome_canal: tamanho = "1x1"
     elif "2x2" in nome_canal: tamanho = "2x2"
     elif "3x3" in nome_canal: tamanho = "3x3"
     elif "4x4" in nome_canal: tamanho = "4x4"
     else: tamanho = "1x1"
         
-    # 2. Define a plataforma de jogo
     if "emu" in nome_canal or "emulador" in nome_canal:
         plataforma = "Emulador"
     elif "misto" in nome_canal:
         plataforma = "Misto"
     else:
-        plataforma = "Mobile" # Caso padrão se contiver 'mobile' ou similar
+        plataforma = "Mobile"
         
     formato_final = f"{tamanho} {plataforma}"
     inicializar_filas_para_formato(formato_final)
     
-    # Imprime os 10 painéis correspondentes sequencialmente
     for valor in VALORES_APOSTAS:
         embed = criar_embed_fila(valor, formato_final)
         view = FilaView(valor, formato_final)
@@ -249,5 +258,4 @@ async def gerarpaineis(ctx):
 async def on_ready():
     print(f"[{bot.user.name}] Monitoramento Mobile, Emulador e Misto Ativado!")
 
-# Puxa o Token com segurança das variáveis do Render
 bot.run(os.environ.get("DISCORD_TOKEN"))
